@@ -88,7 +88,12 @@ final class FPD_Elementor_Catalog_Plugin {
 
 	public function init_widgets( $widgets_manager ) {
 		require_once( __DIR__ . '/includes/widget-fpd-catalog.php' );
-		$widgets_manager->register( new \FPD_Elementor_Catalog_Widget() );
+		
+		if ( method_exists( $widgets_manager, 'register' ) ) {
+			$widgets_manager->register( new \FPD_Elementor_Catalog_Widget() );
+		} else {
+			$widgets_manager->register_widget_type( new \FPD_Elementor_Catalog_Widget() );
+		}
 	}
 
 	public function widget_styles() {
