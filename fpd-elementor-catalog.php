@@ -1,8 +1,8 @@
 <?php
 /**
- * Plugin Name: FPD Dynamic Catalog for Elementor
+ * Plugin Name: FPD Catalog V2
  * Description: A custom Elementor widget that dynamically generates a product archive catalog overlaying FPD Designs onto FPD Base Products.
- * Version: 1.0.0
+ * Version: 2.0.0
  * Author: Digital Sorcerer
  * Text Domain: fpd-elementor-catalog
  */
@@ -13,7 +13,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 final class FPD_Elementor_Catalog_Plugin {
 
-	const VERSION = '1.0.0';
+	const VERSION = '2.0.0';
 	const MINIMUM_ELEMENTOR_VERSION = '3.0.0';
 	const MINIMUM_PHP_VERSION = '7.4';
 
