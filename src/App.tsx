@@ -41,6 +41,7 @@ export default function App() {
   
   // Generation State
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
   const [progress, setProgress] = useState({ current: 0, total: 0 });
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
 
@@ -66,47 +67,61 @@ export default function App() {
       if (settings.openai_key) setApiKey(settings.openai_key);
       if (settings.openai_endpoint) setApiEndpoint(settings.openai_endpoint);
       
-      if (products.length > 0) setActiveBaseProductId(products[0].id);
+      if (products.length > 0 && !activeBaseProductId) setActiveBaseProductId(products[0].id);
     } catch (err) {
       console.error('Failed to fetch data:', err);
     }
+  };
+
+  const sanitizeFilename = (name: string) => {
+    return name.replace(/[/\\?%*:|"<>]/g, '-');
   };
 
   const handleBaseImageUpload = async (e: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []) as File[];
     if (files.length === 0) return;
     
-    for (const file of files) {
-      if (!file.type.startsWith('image/')) continue;
-      
-      const img = new Image();
-      const objectUrl = URL.createObjectURL(file);
-      
-      await new Promise((resolve) => {
-        img.onload = resolve;
-        img.src = objectUrl;
-      });
+    const formData = new FormData();
+    const configs: any[] = [];
 
-      const formData = new FormData();
-      formData.append('image', file);
-      formData.append('name', file.name);
-      formData.append('printArea', JSON.stringify({ x: 25, y: 25, width: 50, height: 50 }));
-      formData.append('align', 'top');
-      formData.append('dimensions', JSON.stringify({ w: img.width, h: img.height }));
-
-      try {
-        const res = await fetch('/api/base-products', {
-          method: 'POST',
-          body: formData
+    setIsUploading(true);
+    
+    try {
+      for (const file of files) {
+        if (!file.type.startsWith('image/')) continue;
+        
+        const img = new Image();
+        const objectUrl = URL.createObjectURL(file);
+        
+        await new Promise((resolve) => {
+          img.onload = resolve;
+          img.src = objectUrl;
         });
-        const newProduct = await res.json();
-        setBaseProducts(prev => [...prev, newProduct]);
-        if (!activeBaseProductId) setActiveBaseProductId(newProduct.id);
-      } catch (err) {
-        console.error('Upload failed:', err);
-      } finally {
+
+        formData.append('images', file);
+        configs.push({ 
+          name: file.name, 
+          dimensions: { w: img.width, h: img.height },
+          printArea: { x: 25, y: 25, width: 50, height: 50 },
+          align: 'top'
+        });
         URL.revokeObjectURL(objectUrl);
       }
+
+      formData.append('configs', JSON.stringify(configs));
+
+      const res = await fetch('/api/base-products', {
+        method: 'POST',
+        body: formData
+      });
+      const newProducts = await res.json();
+      setBaseProducts(prev => [...prev, ...newProducts]);
+      if (!activeBaseProductId && newProducts.length > 0) setActiveBaseProductId(newProducts[0].id);
+    } catch (err) {
+      console.error('Upload failed:', err);
+      alert('Failed to upload some images.');
+    } finally {
+      setIsUploading(false);
     }
     e.target.value = '';
   };
@@ -123,6 +138,19 @@ export default function App() {
       });
     } catch (err) {
       console.error('Delete failed:', err);
+    }
+  };
+
+  const clearAllBaseProducts = async () => {
+    if (!confirm('Are you sure you want to delete ALL base products? This cannot be undone.')) return;
+    
+    try {
+      await fetch('/api/base-products', { method: 'DELETE' });
+      setBaseProducts([]);
+      setActiveBaseProductId(null);
+    } catch (err) {
+      console.error('Clear failed:', err);
+      alert('Failed to clear library.');
     }
   };
 
@@ -150,6 +178,49 @@ export default function App() {
       console.error('Save failed:', err);
       alert('Failed to save configuration.');
     }
+  };
+
+  const exportBaseConfigs = () => {
+    const configs = baseProducts.map(p => ({
+      name: p.name,
+      printArea: p.printArea,
+      align: p.align,
+      dimensions: p.dimensions
+    }));
+    const blob = new Blob([JSON.stringify(configs, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'base_product_configs.json';
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const importBaseConfigs = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const text = await file.text();
+      const configs = JSON.parse(text);
+      
+      const res = await fetch('/api/base-products/bulk-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(configs)
+      });
+
+      if (res.ok) {
+        alert('Configurations imported successfully!');
+        fetchData(); // Refresh data
+      } else {
+        alert('Failed to import configurations.');
+      }
+    } catch (err) {
+      console.error('Import failed:', err);
+      alert('Invalid JSON file.');
+    }
+    e.target.value = '';
   };
 
   const handleDesignsUpload = async (e: ChangeEvent<HTMLInputElement>, isFolder: boolean) => {
@@ -276,6 +347,7 @@ export default function App() {
                 .replace(/{category}/g, loadedDesign.category);
                 
              fileName = `${outputConfig.prefix}${fileName}${outputConfig.suffix}.jpg`;
+             fileName = sanitizeFilename(fileName);
              zip.folder(loadedDesign.category)?.folder(baseName)?.file(fileName, blob);
           }
           setProgress(p => ({ ...p, current: p.current + 1 }));
@@ -368,11 +440,34 @@ export default function App() {
                   <h2 className="text-xl font-bold mb-1">Base Products Library</h2>
                   <p className="text-sm text-gray-500">Your saved products are persisted on the server.</p>
                 </div>
-                <label className="cursor-pointer bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg font-medium transition-colors shadow-sm inline-flex items-center gap-2">
-                  <Plus className="w-4 h-4" />
-                  Upload New Base
-                  <input type="file" accept="image/*" multiple className="hidden" onChange={handleBaseImageUpload} />
-                </label>
+                <div className="flex gap-2">
+                  <button 
+                    onClick={clearAllBaseProducts}
+                    className="bg-white border border-red-200 hover:bg-red-50 text-red-600 px-4 py-2 rounded-lg font-medium transition-colors inline-flex items-center gap-2"
+                    title="Delete All Base Products"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    Clear All
+                  </button>
+                  <button 
+                    onClick={exportBaseConfigs}
+                    className="bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 px-4 py-2 rounded-lg font-medium transition-colors inline-flex items-center gap-2"
+                    title="Export Configurations to JSON"
+                  >
+                    <Download className="w-4 h-4" />
+                    Export
+                  </button>
+                  <label className="cursor-pointer bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 px-4 py-2 rounded-lg font-medium transition-colors inline-flex items-center gap-2" title="Import Configurations from JSON">
+                    <FileUp className="w-4 h-4" />
+                    Import
+                    <input type="file" accept=".json" className="hidden" onChange={importBaseConfigs} />
+                  </label>
+                  <label className="cursor-pointer bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg font-medium transition-colors shadow-sm inline-flex items-center gap-2">
+                    {isUploading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+                    {isUploading ? 'Uploading...' : 'Upload New Base'}
+                    <input type="file" accept="image/*" multiple className="hidden" onChange={handleBaseImageUpload} disabled={isUploading} />
+                  </label>
+                </div>
               </div>
 
               {baseProducts.length === 0 ? (

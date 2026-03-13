@@ -67,26 +67,72 @@ const upload = multer({ storage });
 
 // API Routes
 app.get('/api/base-products', (req, res) => {
-  const products = db.prepare('SELECT * FROM base_products ORDER BY created_at DESC').all();
-  res.json(products.map((p: any) => ({
-    ...p,
-    printArea: JSON.parse(p.print_area),
-    dimensions: JSON.parse(p.dimensions)
-  })));
+  try {
+    const products = db.prepare('SELECT * FROM base_products ORDER BY created_at DESC').all();
+    res.json(products.map((p: any) => {
+      let printArea = { x: 25, y: 25, width: 50, height: 50 };
+      let dimensions = { w: 0, h: 0 };
+      
+      try {
+        if (p.print_area) printArea = JSON.parse(p.print_area);
+      } catch (e) { console.error("Parse error print_area:", e); }
+      
+      try {
+        if (p.dimensions) dimensions = JSON.parse(p.dimensions);
+      } catch (e) { console.error("Parse error dimensions:", e); }
+
+      return {
+        ...p,
+        printArea,
+        dimensions
+      };
+    }));
+  } catch (err) {
+    console.error("Failed to get products:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
 });
 
-app.post('/api/base-products', upload.single('image'), (req, res) => {
-  const { name, printArea, align, dimensions } = req.body;
-  const id = Math.random().toString(36).substring(7);
-  const file = (req as any).file;
-  const url = `/uploads/${file?.filename}`;
+app.post('/api/base-products', upload.array('images'), (req, res) => {
+  const files = (req as any).files as any[];
+  const { configs } = req.body; // Optional JSON string of configs
+  
+  let parsedConfigs: any[] = [];
+  try {
+    if (configs) parsedConfigs = JSON.parse(configs);
+  } catch (e) {
+    console.error("Failed to parse configs:", e);
+  }
 
-  db.prepare(`
+  const stmt = db.prepare(`
     INSERT INTO base_products (id, name, url, print_area, align, dimensions)
     VALUES (?, ?, ?, ?, ?, ?)
-  `).run(id, name, url, printArea, align, dimensions);
+  `);
 
-  res.json({ id, name, url, printArea: JSON.parse(printArea), align, dimensions: JSON.parse(dimensions) });
+  const results = files.map(file => {
+    const id = Math.random().toString(36).substring(7);
+    const url = `/uploads/${file.filename}`;
+    const name = file.originalname;
+    
+    // Check if we have a config for this file name
+    const config = parsedConfigs.find(c => c.name === name);
+    
+    const printArea = config?.printArea ? (typeof config.printArea === 'string' ? config.printArea : JSON.stringify(config.printArea)) : JSON.stringify({ x: 25, y: 25, width: 50, height: 50 });
+    const align = config?.align || 'top';
+    const dimensions = config?.dimensions ? (typeof config.dimensions === 'string' ? config.dimensions : JSON.stringify(config.dimensions)) : JSON.stringify({ w: 0, h: 0 }); // Will be updated by client if needed
+
+    stmt.run(id, name, url, printArea, align, dimensions);
+    return { 
+      id, 
+      name, 
+      url, 
+      printArea: JSON.parse(printArea), 
+      align, 
+      dimensions: JSON.parse(dimensions) 
+    };
+  });
+
+  res.json(results);
 });
 
 app.delete('/api/base-products/:id', (req, res) => {
@@ -97,6 +143,21 @@ app.delete('/api/base-products/:id', (req, res) => {
     db.prepare('DELETE FROM base_products WHERE id = ?').run(req.params.id);
   }
   res.json({ success: true });
+});
+
+app.delete('/api/base-products', (req, res) => {
+  try {
+    const products = db.prepare('SELECT url FROM base_products').all() as any[];
+    products.forEach(p => {
+      const filePath = path.join(__dirname, p.url);
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    });
+    db.prepare('DELETE FROM base_products').run();
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Failed to clear products:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
 });
 
 app.get('/api/designs', (req, res) => {
@@ -142,6 +203,29 @@ app.put('/api/base-products/:id', (req, res) => {
     WHERE id = ?
   `).run(name, printArea, align, dimensions, req.params.id);
 
+  res.json({ success: true });
+});
+
+app.post('/api/base-products/bulk-config', (req, res) => {
+  const configs = req.body;
+  const stmt = db.prepare(`
+    UPDATE base_products 
+    SET print_area = ?, align = ?, dimensions = ?
+    WHERE name = ?
+  `);
+  
+  const transaction = db.transaction((items) => {
+    for (const item of items) {
+      stmt.run(
+        typeof item.printArea === 'string' ? item.printArea : JSON.stringify(item.printArea), 
+        item.align, 
+        typeof item.dimensions === 'string' ? item.dimensions : JSON.stringify(item.dimensions), 
+        item.name
+      );
+    }
+  });
+  
+  transaction(configs);
   res.json({ success: true });
 });
 
